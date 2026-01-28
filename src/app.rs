@@ -200,6 +200,9 @@ fn handle_scan(directory: Option<std::path::PathBuf>, overwrite: bool) {
     });
     println!("Scanning directory: {}", dir.display());
 
+    // Load config for skip_vp9_av1 setting
+    let cfg = config::Config::load().unwrap_or_default();
+
     match engine::scan(&dir) {
         Ok(files) => {
             let profile = default_profile_name();
@@ -214,6 +217,7 @@ fn handle_scan(directory: Option<std::path::PathBuf>, overwrite: bool) {
                 custom_output_dir,
                 custom_pattern,
                 custom_container,
+                cfg.defaults.skip_vp9_av1,
             );
 
             for job in &jobs {
@@ -400,6 +404,9 @@ fn handle_dry_run(directory: Option<std::path::PathBuf>, overwrite: bool) {
     });
     println!("Dry run: building ffmpeg commands for {}", dir.display());
 
+    // Load config for skip_vp9_av1 setting
+    let cfg = config::Config::load().unwrap_or_default();
+
     match engine::scan(&dir) {
         Ok(files) => {
             let profile = default_profile_name();
@@ -414,6 +421,7 @@ fn handle_dry_run(directory: Option<std::path::PathBuf>, overwrite: bool) {
                 custom_output_dir,
                 custom_pattern,
                 custom_container,
+                cfg.defaults.skip_vp9_av1,
             );
             for job in &jobs {
                 let cmd = engine::build_ffmpeg_cmd(job, None);
@@ -431,6 +439,9 @@ fn handle_encode_one(directory: Option<std::path::PathBuf>, overwrite: bool) {
     let dir = directory.unwrap_or_else(|| {
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
+
+    // Load config for skip_vp9_av1 setting
+    let cfg = config::Config::load().unwrap_or_default();
 
     match engine::scan(&dir) {
         Ok(files) => {
@@ -451,6 +462,7 @@ fn handle_encode_one(directory: Option<std::path::PathBuf>, overwrite: bool) {
                 custom_output_dir,
                 custom_pattern,
                 custom_container,
+                cfg.defaults.skip_vp9_av1,
             );
 
             if let Some(first_job) = jobs.get_mut(0) {

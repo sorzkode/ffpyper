@@ -1,4 +1,5 @@
-use super::ffmpeg_info::probe_duration;
+use super::ffmpeg_info::probe_input_info;
+use super::log::write_debug_log;
 use super::profile::derive_output_path;
 use super::types::{JobStatus, VideoJob};
 use anyhow::Result;
@@ -52,7 +53,9 @@ pub fn scan(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Build job queue from scanned files
-/// Jobs are marked as Skipped if the output file already exists (unless overwrite is true)
+/// Jobs are marked as Skipped if:
+/// - The file is already encoded in VP9/AV1 (when skip_vp9_av1 is true)
+/// - The output file already exists (unless overwrite is true)
 pub fn build_job_from_path(
     input_path: PathBuf,
     profile: &str,
@@ -60,6 +63,7 @@ pub fn build_job_from_path(
     custom_output_dir: Option<&str>,
     custom_pattern: Option<&str>,
     custom_container: Option<&str>,
+    skip_vp9_av1: bool,
 ) -> VideoJob {
     let output_path = derive_output_path(
         &input_path,
@@ -73,8 +77,28 @@ pub fn build_job_from_path(
     // Set overwrite flag
     job.overwrite = overwrite;
 
-    // Probe duration for ETA calculation
-    job.duration_s = probe_duration(&input_path).ok();
+    // Probe input info (duration and codec) in one ffprobe call
+    let input_info = probe_input_info(&input_path).ok();
+    job.duration_s = input_info.as_ref().and_then(|i| i.duration_s);
+
+    // Skip detection: check codec before output-exists check so skip reason is accurate
+    if skip_vp9_av1 {
+        if let Some(ref info) = input_info {
+            if let Some(ref codec) = info.video_codec {
+                let codec_lower = codec.to_lowercase();
+                if codec_lower == "vp9" || codec_lower == "av1" {
+                    job.status = JobStatus::Skipped;
+                    job.last_error = Some(format!("Already {} encoded", codec.to_uppercase()));
+                    let _ = write_debug_log(&format!(
+                        "Skipping {}: already encoded as {}",
+                        input_path.display(),
+                        codec
+                    ));
+                    return job;
+                }
+            }
+        }
+    }
 
     // Skip detection: if output exists and overwrite is disabled, mark as Skipped
     if !overwrite && output_path.exists() {
@@ -91,6 +115,7 @@ pub fn build_job_queue(
     custom_output_dir: Option<&str>,
     custom_pattern: Option<&str>,
     custom_container: Option<&str>,
+    skip_vp9_av1: bool,
 ) -> Vec<VideoJob> {
     files
         .into_iter()
@@ -102,6 +127,7 @@ pub fn build_job_queue(
                 custom_output_dir,
                 custom_pattern,
                 custom_container,
+                skip_vp9_av1,
             )
         })
         .collect()

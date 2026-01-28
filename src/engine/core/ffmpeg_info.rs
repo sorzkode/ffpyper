@@ -9,8 +9,23 @@ struct FfprobeFormat {
 }
 
 #[derive(Debug, Deserialize)]
+struct FfprobeStream {
+    codec_name: Option<String>,
+    codec_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct FfprobeOutput {
     format: FfprobeFormat,
+    #[serde(default)]
+    streams: Vec<FfprobeStream>,
+}
+
+/// Input file info from ffprobe (duration and video codec)
+#[derive(Debug, Clone)]
+pub struct InputInfo {
+    pub duration_s: Option<f64>,
+    pub video_codec: Option<String>,
 }
 
 /// Check if ffmpeg is available and return its version
@@ -98,6 +113,50 @@ pub fn probe_duration(path: &Path) -> Result<f64> {
         .context("Failed to parse duration as float")?;
 
     Ok(duration)
+}
+
+/// Probe a video file to get duration and video codec in one call
+pub fn probe_input_info(path: &Path) -> Result<InputInfo> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("quiet")
+        .arg("-print_format")
+        .arg("json")
+        .arg("-show_format")
+        .arg("-show_streams")
+        .arg(path)
+        .output()
+        .context("Failed to execute ffprobe")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let probe: FfprobeOutput =
+        serde_json::from_str(&json_str).context("Failed to parse ffprobe JSON output")?;
+
+    // Extract duration
+    let duration_s = probe
+        .format
+        .duration
+        .and_then(|s| s.parse::<f64>().ok());
+
+    // Extract video codec (first video stream)
+    let video_codec = probe
+        .streams
+        .iter()
+        .find(|s| s.codec_type.as_deref() == Some("video"))
+        .and_then(|s| s.codec_name.clone());
+
+    Ok(InputInfo {
+        duration_s,
+        video_codec,
+    })
 }
 
 /// Parse duration from ffprobe JSON string (for testing)

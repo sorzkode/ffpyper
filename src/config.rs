@@ -59,6 +59,10 @@ pub struct DefaultsConfig {
     /// Disable VAAPI fallback when QSV fails (fail fast instead of retrying)
     #[serde(default)]
     pub disable_vaapi_fallback: bool,
+
+    /// Skip files already encoded in VP9 or AV1 during scan
+    #[serde(default = "default_true_config")]
+    pub skip_vp9_av1: bool,
 }
 
 fn default_scan_on_launch() -> bool {
@@ -101,6 +105,7 @@ impl Default for DefaultsConfig {
             filename_pattern: default_filename_pattern(),
             auto_bit_depth: true,          // Use source bit depth for HW surfaces
             disable_vaapi_fallback: false, // Try VAAPI fallback when QSV fails
+            skip_vp9_av1: true,            // Skip files already in VP9/AV1
         }
     }
 }
@@ -207,6 +212,7 @@ mod tests {
         assert_eq!(config.defaults.last_used_profile, None);
         assert_eq!(config.defaults.auto_bit_depth, true);
         assert_eq!(config.defaults.disable_vaapi_fallback, false);
+        assert_eq!(config.defaults.skip_vp9_av1, true);
     }
 
     #[test]

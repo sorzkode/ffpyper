@@ -25,6 +25,9 @@ scan_on_launch = true
 # Default encoding profile
 profile = "1080p Shrinker"
 
+# Default Skip Behavior
+skip_vp9_av1 = true
+
 # Concurrent encoding jobs (1 = sequential)
 max_workers = 1
 ```
@@ -39,6 +42,7 @@ max_workers = 1
 | `max_workers` | `1` | Parallel encode jobs (higher = more CPU/RAM) |
 | `filename_pattern` | `"{basename}"` | Output filename template (supports `{basename}`, `{profile}`, `{ext}`) |
 | `overwrite` | `false` | Overwrite existing output files |
+| skip_vp9_av1 | `true` | Skip VP9/AV1 files (useful for skipping already-encoded files) |
 | `use_hardware_encoding` | `false` | Enable hardware encoding (VAAPI/QSV/NVENC) |
 | `auto_bit_depth` | `true` | Auto-select pixel format from source (p010 for 10-bit, nv12 for 8-bit) |
 

@@ -19,7 +19,8 @@ pub use ffmpeg_cmd::{
     validate_vaapi_config,
 };
 pub use ffmpeg_info::{
-    ffmpeg_version, ffprobe_version, parse_ffprobe_duration, probe_duration, vmaf_filter_available,
+    InputInfo, ffmpeg_version, ffprobe_version, parse_ffprobe_duration, probe_duration,
+    probe_input_info, vmaf_filter_available,
 };
 pub use hw_config::HwEncodingConfig;
 pub use log::write_debug_log;
@@ -177,7 +178,7 @@ mod tests {
 
         // Test with overwrite=false (should skip existing outputs)
         let jobs_no_overwrite =
-            build_job_queue(input_files.clone(), "vp9-good", false, None, None, None);
+            build_job_queue(input_files.clone(), "vp9-good", false, None, None, None, false);
         assert_eq!(jobs_no_overwrite.len(), 4);
         assert_eq!(
             jobs_no_overwrite[0].status,
@@ -202,7 +203,7 @@ mod tests {
 
         // Test with overwrite=true (should NOT skip any)
         let jobs_with_overwrite =
-            build_job_queue(input_files.clone(), "vp9-good", true, None, None, None);
+            build_job_queue(input_files.clone(), "vp9-good", true, None, None, None, false);
         assert_eq!(jobs_with_overwrite.len(), 4);
         assert_eq!(
             jobs_with_overwrite[0].status,
@@ -252,7 +253,7 @@ mod tests {
         }
 
         // Simulate a previous run: create .enc_state and .enc_queue with 3 completed jobs
-        let prev_jobs = build_job_queue(input_files.clone(), "vp9-good", false, None, None, None);
+        let prev_jobs = build_job_queue(input_files.clone(), "vp9-good", false, None, None, None, false);
         let mut prev_state =
             EncState::new(prev_jobs, "vp9-good".to_string(), dir_path.to_path_buf());
 
@@ -271,7 +272,7 @@ mod tests {
         fs::write(dir_path.join(".enc_queue"), queue_content).unwrap();
 
         // Now simulate starting a new run with overwrite=true
-        let fresh_jobs = build_job_queue(input_files.clone(), "vp9-good", true, None, None, None);
+        let fresh_jobs = build_job_queue(input_files.clone(), "vp9-good", true, None, None, None, false);
 
         // All fresh jobs should be Pending (overwrite=true)
         assert_eq!(
@@ -382,6 +383,7 @@ mod tests {
             Some(output_dir_str),
             None,
             None,
+            false,
         );
 
         assert_eq!(jobs.len(), 3);
@@ -409,6 +411,7 @@ mod tests {
             Some(output_dir_str),
             None,
             None,
+            false,
         );
         assert_eq!(
             jobs_after[0].status,

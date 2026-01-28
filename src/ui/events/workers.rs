@@ -320,6 +320,9 @@ pub(super) fn rescan_directory(
         Some(state.config.output_dir.as_str())
     };
 
+    // Load config for skip_vp9_av1 setting
+    let cfg = crate::config::Config::load().unwrap_or_default();
+
     // Build fresh job queue (respect overwrite setting)
     let jobs = engine::build_job_queue(
         files,
@@ -328,6 +331,7 @@ pub(super) fn rescan_directory(
         custom_output_dir,
         custom_pattern,
         custom_container,
+        cfg.defaults.skip_vp9_av1,
     );
 
     // Create new enc_state (don't merge with old one)
@@ -448,6 +452,9 @@ pub(super) fn start_encoding(
         Some(state.config.output_dir.as_str())
     };
 
+    // Load config for skip_vp9_av1 setting
+    let cfg = crate::config::Config::load().unwrap_or_default();
+
     // Build job queue (respect overwrite setting)
     let jobs = engine::build_job_queue(
         files,
@@ -456,6 +463,7 @@ pub(super) fn start_encoding(
         custom_output_dir,
         custom_pattern,
         custom_container,
+        cfg.defaults.skip_vp9_av1,
     );
 
     // Create enc_state with jobs (preserving any skip status)

@@ -37,6 +37,7 @@ struct ScanConfig {
     custom_output_dir: Option<String>,
     custom_pattern: Option<String>,
     custom_container: Option<String>,
+    skip_vp9_av1: bool,
 }
 
 fn spawn_scan_thread(config: ScanConfig, tx: mpsc::Sender<UiEvent>) {
@@ -49,6 +50,7 @@ fn spawn_scan_thread(config: ScanConfig, tx: mpsc::Sender<UiEvent>) {
                 config.custom_output_dir.as_deref(),
                 config.custom_pattern.as_deref(),
                 config.custom_container.as_deref(),
+                config.skip_vp9_av1,
             );
 
             let _ = tx.send(UiEvent::ScanJob(Box::new(job)));
@@ -187,6 +189,7 @@ pub fn run_ui_with_options(
             },
             custom_pattern: Some(app_state.config.filename_pattern.clone()),
             custom_container: Some(custom_container),
+            skip_vp9_av1: config.defaults.skip_vp9_av1,
         };
 
         // Initialize enc_state so skip toggles stay in sync while jobs stream in
