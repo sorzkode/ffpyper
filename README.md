@@ -352,7 +352,7 @@ ffmpeg -h encoder=av1_vaapi     # VA-API AV1
 - [x] Per-directory state persistence
 - [ ] Watch mode (auto-encode new files)
 - [ ] Post-encode scripts/hooks
-- [ ] Better way to build queue
+- [x] Better way to build queue
 - [ ] Better way to to use dryrun / ffmpeg command builder
 
 
