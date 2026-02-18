@@ -18,6 +18,7 @@ mod sections;
 pub struct Dashboard;
 
 impl Dashboard {
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         frame: &mut Frame,
         state: &mut DashboardState,
@@ -26,6 +27,8 @@ impl Dashboard {
         profile_name: Option<&str>,
         use_hw: bool,
         auto_vmaf_enabled: bool,
+        scan_in_progress: bool,
+        tick_counter: u64,
     ) {
         use crate::engine::JobStatus;
 
@@ -44,7 +47,7 @@ impl Dashboard {
 
         // Render each section
         Self::render_system_metrics(frame, chunks[0], state, use_hw);
-        Self::render_queue_overall(frame, chunks[1], state, profile_name, target_workers);
+        Self::render_queue_overall(frame, chunks[1], state, profile_name, target_workers, scan_in_progress, tick_counter);
         Self::render_active_jobs(frame, chunks[2], state, auto_vmaf_enabled);
 
         // Calculate stats for footer (exclude skipped jobs from total)

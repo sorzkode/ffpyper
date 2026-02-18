@@ -93,6 +93,7 @@ pub(super) fn initialize_default_profile(state: &mut AppState, config: &crate::c
     state.config.overwrite = config.defaults.overwrite;
     state.config.use_hardware_encoding = config.defaults.use_hardware_encoding;
     state.config.filename_pattern = config.defaults.filename_pattern.clone();
+    state.config.skip_vp9_av1 = config.defaults.skip_vp9_av1;
 
     // Update profile_list_state to select the correct index for the loaded profile
     // Build the profile list (same as UI rendering logic)
@@ -115,7 +116,11 @@ pub(super) fn initialize_default_profile(state: &mut AppState, config: &crate::c
     }
 }
 
-pub(super) fn handle_config_key(key: KeyEvent, state: &mut AppState) {
+pub(super) fn handle_config_key(
+    key: KeyEvent,
+    state: &mut AppState,
+    event_tx: &std::sync::mpsc::Sender<super::UiEvent>,
+) {
     // If profile name input dialog is active, handle text input
     if let Some(ref mut name) = state.config.name_input_dialog {
         match key.code {
@@ -197,6 +202,22 @@ pub(super) fn handle_config_key(key: KeyEvent, state: &mut AppState) {
             use crate::ui::state::InputMode;
             state.current_screen = Screen::Dashboard;
             state.config.input_mode = InputMode::Normal;
+
+            // Auto-rescan if job-affecting settings changed
+            if let Some(snapshot) = state.config_settings_snapshot.take() {
+                let current =
+                    crate::ui::state::JobAffectingSnapshot::capture(&state.config);
+                if snapshot != current
+                    && !state.dashboard.any_running()
+                    && !state.scan_in_progress
+                    && !state.dashboard.jobs.is_empty()
+                {
+                    super::capture_skip_overrides(state);
+                    if let Some(root) = state.root_path.clone() {
+                        super::workers::rescan_directory(state, root, event_tx);
+                    }
+                }
+            }
         }
         // Global hotkeys
         KeyCode::Char('s') | KeyCode::Char('S')

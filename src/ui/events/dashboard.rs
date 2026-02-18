@@ -1,9 +1,15 @@
 use super::{workers, *};
 
-pub(super) fn handle_dashboard_key(key: KeyEvent, state: &mut AppState) {
+pub(super) fn handle_dashboard_key(
+    key: KeyEvent,
+    state: &mut AppState,
+    event_tx: &std::sync::mpsc::Sender<super::UiEvent>,
+) {
     match key.code {
         // Switch to config
         KeyCode::Char('c') | KeyCode::Char('C') => {
+            state.config_settings_snapshot =
+                Some(crate::ui::state::JobAffectingSnapshot::capture(&state.config));
             state.current_screen = Screen::Config;
         }
         // Switch to stats
@@ -50,16 +56,9 @@ pub(super) fn handle_dashboard_key(key: KeyEvent, state: &mut AppState) {
                     (state.dashboard.foreground_job_index + 1) % running_count;
             }
         }
-        // Start encoding (for testing - prompts for directory)
+        // Start encoding
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            // For now, use current directory as default
-            // In production, this would show a directory picker dialog
-            let is_encoding = state
-                .dashboard
-                .jobs
-                .iter()
-                .any(|j| matches!(j.status, crate::engine::JobStatus::Running));
-            if !is_encoding {
+            if !state.dashboard.any_running() && !state.scan_in_progress {
                 // If jobs are already loaded, use them directly to preserve skip status
                 if !state.dashboard.jobs.is_empty() {
                     match workers::start_encoding_from_loaded_jobs(state) {
@@ -71,48 +70,37 @@ pub(super) fn handle_dashboard_key(key: KeyEvent, state: &mut AppState) {
                         }
                     }
                 } else {
-                    // No jobs loaded - scan directory and start
-                    let current_dir =
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    match workers::start_encoding(state, current_dir) {
-                        Ok(_) => {
-                            // Encoding started successfully
-                        }
-                        Err(_e) => {
-                            // Error will be visible in worker status
-                        }
-                    }
+                    // No jobs loaded - scan directory in background, then auto-start
+                    let dir = state
+                        .root_path
+                        .clone()
+                        .unwrap_or_else(|| {
+                            std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        });
+                    workers::start_encoding_with_scan(state, dir, event_tx);
                 }
             }
         }
         // Rescan current directory
         KeyCode::Char('r') | KeyCode::Char('R') => {
-            // Only allow rescan if not currently encoding
-            let is_encoding = state
-                .dashboard
-                .jobs
-                .iter()
-                .any(|j| matches!(j.status, crate::engine::JobStatus::Running));
-            if !is_encoding {
-                if let Some(root) = &state.root_path {
-                    match workers::rescan_directory(state, root.clone()) {
-                        Ok(_) => {
-                            // Rescan successful - clear worker pool if all jobs are done
-                            let all_done = state.dashboard.jobs.iter().all(|j| {
-                                matches!(
-                                    j.status,
-                                    crate::engine::JobStatus::Done
-                                        | crate::engine::JobStatus::Failed
-                                )
-                            });
-                            if all_done {
-                                state.worker_pool = None;
-                            }
-                        }
-                        Err(_e) => {
-                            // Error will be visible in UI status
-                        }
+            // Only allow rescan if not currently encoding or scanning
+            if !state.dashboard.any_running() && !state.scan_in_progress {
+                if let Some(root) = state.root_path.clone() {
+                    // Clear worker pool if all jobs are done
+                    let all_done = state.dashboard.jobs.is_empty()
+                        || state.dashboard.jobs.iter().all(|j| {
+                            matches!(
+                                j.status,
+                                crate::engine::JobStatus::Done
+                                    | crate::engine::JobStatus::Failed
+                            )
+                        });
+                    if all_done {
+                        state.worker_pool = None;
                     }
+                    super::capture_skip_overrides(state);
+                    workers::rescan_directory(state, root, event_tx);
                 }
             }
         }
@@ -169,12 +157,7 @@ pub(super) fn handle_dashboard_key(key: KeyEvent, state: &mut AppState) {
         // Delete .enc_state and exit
         KeyCode::Char('x') | KeyCode::Char('X') => {
             // Only allow deleting if no jobs are running
-            let is_encoding = state
-                .dashboard
-                .jobs
-                .iter()
-                .any(|j| matches!(j.status, crate::engine::JobStatus::Running));
-            if !is_encoding {
+            if !state.dashboard.any_running() {
                 // Delete .enc_state file if it exists
                 if let Some(root) = &state.root_path {
                     let state_path = root.join(".enc_state");

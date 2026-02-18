@@ -176,10 +176,20 @@ impl Dashboard {
         state: &DashboardState,
         profile_name: Option<&str>,
         max_workers: u32,
+        scan_in_progress: bool,
+        tick_counter: u64,
     ) {
         use crate::engine::JobStatus;
 
-        let title = if let Some(profile) = profile_name {
+        let title = if scan_in_progress {
+            const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+            let frame = (tick_counter / 4) % 8;
+            let n = state.jobs.len();
+            format!(
+                "Queue Overview — {} Scanning... ({} files found)",
+                SPINNER[frame as usize], n
+            )
+        } else if let Some(profile) = profile_name {
             format!("Queue Overview — Profile: {}", profile)
         } else {
             "Queue Overview — Profile: Custom".to_string()

@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -71,9 +72,10 @@ fn spawn_scan_thread(config: ScanConfig, tx: mpsc::Sender<UiEvent>) {
 enum UiEvent {
     Input(Event),                          // Keyboard, mouse, or other terminal events
     Tick,                                  // Periodic update for rendering and metrics
-    ScanJob(Box<crate::engine::VideoJob>), // Discovered job during initial scan
-    ScanFinished,                          // Initial scan completed
-    ScanFailed(String),                    // Initial scan failed
+    ScanJob(Box<crate::engine::VideoJob>), // Discovered job during scan
+    ScanFinished,                          // Scan completed
+    ScanFailed(String),                    // Scan failed
+    RescanStarting,                        // Clear old jobs before new scan results arrive
 }
 
 /// Spawn a dedicated thread for event polling.
@@ -168,29 +170,7 @@ pub fn run_ui_with_options(
     spawn_event_thread(event_tx.clone());
 
     if should_scan {
-        let container_options = ["webm", "mp4", "mkv", "avi"];
-        let custom_container = app_state
-            .config
-            .container_dropdown_state
-            .selected()
-            .and_then(|idx| container_options.get(idx))
-            .copied()
-            .unwrap_or("webm")
-            .to_string();
-
-        let scan_config = ScanConfig {
-            root: root.clone(),
-            profile: config.defaults.profile.clone(),
-            overwrite: app_state.config.overwrite,
-            custom_output_dir: if app_state.config.output_dir.is_empty() {
-                None
-            } else {
-                Some(app_state.config.output_dir.clone())
-            },
-            custom_pattern: Some(app_state.config.filename_pattern.clone()),
-            custom_container: Some(custom_container),
-            skip_vp9_av1: config.defaults.skip_vp9_av1,
-        };
+        let scan_config = build_scan_config(&app_state, &root);
 
         // Initialize enc_state so skip toggles stay in sync while jobs stream in
         app_state.enc_state = Some(crate::engine::EncState::new(
@@ -206,7 +186,7 @@ pub fn run_ui_with_options(
     }
 
     // Main loop
-    let result = run_app(&mut terminal, &mut app_state, event_rx);
+    let result = run_app(&mut terminal, &mut app_state, event_rx, &event_tx);
 
     // Restore terminal: leave alternate screen and disable mouse capture
     disable_raw_mode()?;
@@ -220,11 +200,45 @@ pub fn run_ui_with_options(
     result
 }
 
+fn build_scan_config(state: &AppState, root: &std::path::Path) -> ScanConfig {
+    let container_options = ["webm", "mp4", "mkv", "avi"];
+    let custom_container = state
+        .config
+        .container_dropdown_state
+        .selected()
+        .and_then(|idx| container_options.get(idx))
+        .copied()
+        .unwrap_or("webm")
+        .to_string();
+
+    let profile = state
+        .config
+        .current_profile_name
+        .clone()
+        .unwrap_or_else(|| "YouTube 4K".to_string());
+
+    ScanConfig {
+        root: root.to_path_buf(),
+        profile,
+        overwrite: state.config.overwrite,
+        custom_output_dir: if state.config.output_dir.is_empty() {
+            None
+        } else {
+            Some(state.config.output_dir.clone())
+        },
+        custom_pattern: Some(state.config.filename_pattern.clone()),
+        custom_container: Some(custom_container),
+        skip_vp9_av1: state.config.skip_vp9_av1,
+    }
+}
+
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
     event_rx: Receiver<UiEvent>,
+    event_tx: &mpsc::Sender<UiEvent>,
 ) -> io::Result<()> {
+    let mut tick_counter: u64 = 0;
     loop {
         // Collect all pending events so we can coalesce tick bursts and keep inputs snappy
         let mut pending_ticks: u64 = 0;
@@ -232,6 +246,7 @@ fn run_app<B: ratatui::backend::Backend>(
         let mut pending_scan_jobs: Vec<crate::engine::VideoJob> = Vec::new();
         let mut scan_finished = false;
         let mut scan_error: Option<String> = None;
+        let mut rescan_starting = false;
 
         // Always block for at least one event, then drain the queue
         match event_rx.recv() {
@@ -241,6 +256,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 UiEvent::ScanJob(job) => pending_scan_jobs.push(*job),
                 UiEvent::ScanFinished => scan_finished = true,
                 UiEvent::ScanFailed(err) => scan_error = Some(err),
+                UiEvent::RescanStarting => rescan_starting = true,
             },
             Err(_) => {
                 // Channel closed, exit
@@ -255,7 +271,14 @@ fn run_app<B: ratatui::backend::Backend>(
                 UiEvent::ScanJob(job) => pending_scan_jobs.push(*job),
                 UiEvent::ScanFinished => scan_finished = true,
                 UiEvent::ScanFailed(err) => scan_error = Some(err),
+                UiEvent::RescanStarting => rescan_starting = true,
             }
+        }
+
+        // Handle rescan: clear old jobs before streaming new ones
+        if rescan_starting {
+            state.dashboard.jobs.clear();
+            state.dashboard.table_state.select(None);
         }
 
         if !pending_scan_jobs.is_empty() {
@@ -273,6 +296,9 @@ fn run_app<B: ratatui::backend::Backend>(
         if scan_finished {
             state.scan_in_progress = false;
 
+            // Restore skip overrides before persisting
+            restore_skip_overrides(state);
+
             // Persist the discovered queue
             if let Some(ref mut enc_state) = state.enc_state {
                 enc_state.jobs = state.dashboard.jobs.clone();
@@ -281,22 +307,19 @@ fn run_app<B: ratatui::backend::Backend>(
                 }
             }
 
-            // If autostart was requested, kick it off now that jobs are loaded
             if state.pending_autostart && !state.dashboard.jobs.is_empty() {
                 if let Err(_e) = workers::start_encoding_from_loaded_jobs(state) {
-                    // Error will be visible in UI status, user can start manually
+                    // Error will be visible in UI status
                 }
-                state.pending_autostart = false;
-            } else {
-                state.pending_autostart = false;
             }
+            state.pending_autostart = false;
         }
 
         // Process input events first so user commands are never stuck behind a tick backlog
         for input in pending_inputs {
             match input {
                 Event::Key(key) => {
-                    if handle_key(key, state) {
+                    if handle_key(key, state, event_tx) {
                         return Ok(());
                     }
                 }
@@ -310,6 +333,8 @@ fn run_app<B: ratatui::backend::Backend>(
         }
 
         if pending_ticks > 0 {
+            tick_counter = tick_counter.wrapping_add(1);
+
             // Update metrics on tick (~60 FPS)
             let now = Instant::now();
             if now.duration_since(state.last_metrics_update) >= Duration::from_millis(500) {
@@ -348,6 +373,8 @@ fn run_app<B: ratatui::backend::Backend>(
                         state.config.current_profile_name.as_deref(),
                         state.config.use_hardware_encoding,
                         state.config.auto_vmaf_enabled,
+                        state.scan_in_progress,
+                        tick_counter,
                     );
                 }
                 Screen::Config => {
@@ -382,13 +409,41 @@ fn add_scanned_job(state: &mut AppState, job: crate::engine::VideoJob) {
     }
 }
 
+/// Collect input_paths of all Skipped jobs into skip_overrides (additive, never cleared).
+pub(super) fn capture_skip_overrides(state: &mut AppState) {
+    for job in &state.dashboard.jobs {
+        if job.status == crate::engine::JobStatus::Skipped {
+            state.skip_overrides.insert(job.input_path.clone());
+        }
+    }
+}
+
+fn mark_skipped(jobs: &mut [crate::engine::VideoJob], overrides: &HashSet<PathBuf>) {
+    for job in jobs {
+        if job.status == crate::engine::JobStatus::Pending && overrides.contains(&job.input_path) {
+            job.status = crate::engine::JobStatus::Skipped;
+        }
+    }
+}
+
+/// After scan finishes, re-mark matching Pending jobs as Skipped.
+fn restore_skip_overrides(state: &mut AppState) {
+    if state.skip_overrides.is_empty() {
+        return;
+    }
+    mark_skipped(&mut state.dashboard.jobs, &state.skip_overrides);
+    if let Some(ref mut enc_state) = state.enc_state {
+        mark_skipped(&mut enc_state.jobs, &state.skip_overrides);
+    }
+}
+
 fn should_quit(key: &KeyEvent, _state: &AppState) -> bool {
     // Quit on 'q' or Ctrl+C
     matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-fn handle_key(key: KeyEvent, state: &mut AppState) -> bool {
+fn handle_key(key: KeyEvent, state: &mut AppState, event_tx: &mpsc::Sender<UiEvent>) -> bool {
     // Check if quit confirmation modal is open - highest priority
     if state.quit_confirmation.is_some() {
         match key.code {
@@ -453,8 +508,8 @@ fn handle_key(key: KeyEvent, state: &mut AppState) -> bool {
 
     // Handle screen-specific keys
     match state.current_screen {
-        Screen::Dashboard => dashboard::handle_dashboard_key(key, state),
-        Screen::Config => config::handle_config_key(key, state),
+        Screen::Dashboard => dashboard::handle_dashboard_key(key, state, event_tx),
+        Screen::Config => config::handle_config_key(key, state, event_tx),
         Screen::Stats => stats::handle_stats_key(key, state),
     }
 

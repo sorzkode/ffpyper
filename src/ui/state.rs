@@ -8,7 +8,7 @@ use ratatui::{
     layout::Rect,
     widgets::{ListState, TableState},
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Instant;
 use sysinfo::System;
@@ -137,6 +137,27 @@ pub struct QuitConfirmationState {
     pub running_count: usize,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct JobAffectingSnapshot {
+    pub profile: Option<String>,
+    pub overwrite: bool,
+    pub output_dir: String,
+    pub filename_pattern: String,
+    pub container_idx: Option<usize>,
+}
+
+impl JobAffectingSnapshot {
+    pub fn capture(config: &ConfigState) -> Self {
+        Self {
+            profile: config.current_profile_name.clone(),
+            overwrite: config.overwrite,
+            output_dir: config.output_dir.clone(),
+            filename_pattern: config.filename_pattern.clone(),
+            container_idx: config.container_dropdown_state.selected(),
+        }
+    }
+}
+
 pub struct AppState {
     pub current_screen: Screen,
     pub dashboard: DashboardState,
@@ -156,6 +177,8 @@ pub struct AppState {
     pub huc_available: Option<bool>, // HuC firmware status (for VBR/CBR modes)
     pub scan_in_progress: bool,      // True while initial scan is running
     pub pending_autostart: bool,     // True if we should autostart after scan completes
+    pub skip_overrides: HashSet<std::path::PathBuf>,         // Session-only manual skip decisions
+    pub config_settings_snapshot: Option<JobAffectingSnapshot>, // Captured on entering Config
 }
 
 impl Default for AppState {
@@ -179,6 +202,8 @@ impl Default for AppState {
             huc_available: None,       // Checked when help is first opened
             scan_in_progress: false,
             pending_autostart: false,
+            skip_overrides: HashSet::new(),
+            config_settings_snapshot: None,
         }
     }
 }
@@ -237,6 +262,14 @@ impl Default for DashboardState {
     }
 }
 
+impl DashboardState {
+    pub fn any_running(&self) -> bool {
+        self.jobs
+            .iter()
+            .any(|j| matches!(j.status, crate::engine::JobStatus::Running))
+    }
+}
+
 pub struct ConfigState {
     pub focus: ConfigFocus,
     pub profile_list_state: ListState,
@@ -286,7 +319,8 @@ pub struct ConfigState {
     // General settings
     pub output_dir: String,
     pub overwrite: bool,
-    pub max_workers: u32, // Number of concurrent encoding jobs (1 = sequential)
+    pub max_workers: u32,   // Number of concurrent encoding jobs (1 = sequential)
+    pub skip_vp9_av1: bool, // Skip files already encoded in VP9/AV1
 
     // Filename customization (template-based)
     // Supports: {filename}, {basename}, {profile}, {ext}
@@ -614,7 +648,8 @@ impl Default for ConfigState {
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| ".".to_string()),
             overwrite: true,
-            max_workers: 1, // Default to sequential processing
+            max_workers: 1,       // Default to sequential processing
+            skip_vp9_av1: false,
 
             // Filename customization
             filename_pattern: "{basename}".to_string(),

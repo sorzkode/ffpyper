@@ -273,88 +273,32 @@ pub(super) fn spawn_next_job(state: &mut AppState) {
     }
 }
 
-/// Rescan directory and refresh job queue
+/// Rescan directory in background (non-blocking)
 pub(super) fn rescan_directory(
     state: &mut AppState,
-    directory: std::path::PathBuf,
-) -> Result<(), String> {
-    use crate::engine;
-
-    // Clear existing jobs first
-    state.dashboard.jobs.clear();
-    state.enc_state = None;
-
-    // Scan for video files
-    let files = engine::scan(&directory).map_err(|e| format!("Failed to scan directory: {}", e))?;
-
-    if files.is_empty() {
-        // Clear state file if no videos found
-        let state_path = directory.join(".enc_state");
-        if state_path.exists() {
-            let _ = std::fs::remove_file(state_path);
-        }
-        return Err("No video files found in directory".to_string());
+    root: std::path::PathBuf,
+    event_tx: &std::sync::mpsc::Sender<super::UiEvent>,
+) {
+    if state.scan_in_progress {
+        return;
     }
 
-    // Get profile name from config
-    let profile_name = state
-        .config
-        .current_profile_name
-        .clone()
-        .unwrap_or_else(|| "YouTube 4K".to_string());
+    state.scan_in_progress = true;
 
-    // Get custom pattern and container from config
-    let custom_pattern = Some(state.config.filename_pattern.as_str());
-    let container_options = ["webm", "mp4", "mkv", "avi"];
-    let container_idx = state
-        .config
-        .container_dropdown_state
-        .selected()
-        .unwrap_or(0);
-    let custom_container = Some(container_options[container_idx]);
+    let scan_config = super::build_scan_config(state, &root);
 
-    // Get output directory from config (None means use input file's directory)
-    let custom_output_dir = if state.config.output_dir.is_empty() {
-        None
-    } else {
-        Some(state.config.output_dir.as_str())
-    };
+    // Initialize empty enc_state so skip toggles work while jobs stream in
+    state.enc_state = Some(crate::engine::EncState::new(
+        Vec::new(),
+        scan_config.profile.clone(),
+        root.clone(),
+    ));
 
-    // Load config for skip_vp9_av1 setting
-    let cfg = crate::config::Config::load().unwrap_or_default();
+    // Send RescanStarting on the calling thread (before spawn) to avoid race
+    // where ScanJob events arrive before the clear signal.
+    let _ = event_tx.send(super::UiEvent::RescanStarting);
 
-    // Build fresh job queue (respect overwrite setting)
-    let jobs = engine::build_job_queue(
-        files,
-        &profile_name,
-        state.config.overwrite,
-        custom_output_dir,
-        custom_pattern,
-        custom_container,
-        cfg.defaults.skip_vp9_av1,
-    );
-
-    // Create new enc_state (don't merge with old one)
-    let enc_state = engine::EncState::new(jobs.clone(), profile_name, directory.clone());
-
-    // Save new state
-    enc_state
-        .save(&directory)
-        .map_err(|e| format!("Failed to save .enc_state: {}", e))?;
-
-    // Update app state
-    state.dashboard.jobs = jobs;
-    state.enc_state = Some(enc_state);
-    state.root_path = Some(directory);
-
-    // Reset table selection to first job
-    if !state.dashboard.jobs.is_empty() {
-        state.dashboard.table_state.select(Some(0));
-    } else {
-        state.dashboard.table_state.select(None);
-    }
-
-    Ok(())
+    super::spawn_scan_thread(scan_config, event_tx.clone());
 }
 
 /// Start encoding from already-loaded jobs (used for autostart)
@@ -410,93 +354,32 @@ pub(super) fn start_encoding_from_loaded_jobs(state: &mut AppState) -> Result<()
     Ok(())
 }
 
-/// Start encoding: scan directory, build job queue, initialize workers
-pub(super) fn start_encoding(
+/// Start encoding with a background scan (non-blocking)
+pub(super) fn start_encoding_with_scan(
     state: &mut AppState,
     directory: std::path::PathBuf,
-) -> Result<(), String> {
-    use crate::engine::{self, worker::WorkerPool};
-
-    // Get profile name from config (use default if none selected)
-    let profile_name = state
-        .config
-        .current_profile_name
-        .clone()
-        .unwrap_or_else(|| "YouTube 4K".to_string());
-
-    // Create Profile from current config to preserve user's custom settings (like max FPS)
-    let profile = engine::Profile::from_config(profile_name.clone(), &state.config);
-
-    // Always rebuild jobs to ensure all current settings (filename pattern, container, profile changes) are applied
-    // This means skip selections are lost, but ensures output filenames match current config
-    let files = engine::scan(&directory).map_err(|e| format!("Failed to scan directory: {}", e))?;
-
-    if files.is_empty() {
-        return Err("No video files found in directory".to_string());
+    event_tx: &std::sync::mpsc::Sender<super::UiEvent>,
+) {
+    if state.scan_in_progress {
+        return;
     }
 
-    // Get custom pattern and container from config
-    let custom_pattern = Some(state.config.filename_pattern.as_str());
-    let container_options = ["webm", "mp4", "mkv", "avi"];
-    let container_idx = state
-        .config
-        .container_dropdown_state
-        .selected()
-        .unwrap_or(0);
-    let custom_container = Some(container_options[container_idx]);
+    state.scan_in_progress = true;
+    state.pending_autostart = true;
 
-    // Get output directory from config (None means use input file's directory)
-    let custom_output_dir = if state.config.output_dir.is_empty() {
-        None
-    } else {
-        Some(state.config.output_dir.as_str())
-    };
+    let scan_config = super::build_scan_config(state, &directory);
 
-    // Load config for skip_vp9_av1 setting
-    let cfg = crate::config::Config::load().unwrap_or_default();
-
-    // Build job queue (respect overwrite setting)
-    let jobs = engine::build_job_queue(
-        files,
-        &profile_name,
-        state.config.overwrite,
-        custom_output_dir,
-        custom_pattern,
-        custom_container,
-        cfg.defaults.skip_vp9_av1,
-    );
-
-    // Create enc_state with jobs (preserving any skip status)
-    let enc_state = engine::EncState::new_with_profile(
-        jobs.clone(),
+    // Initialize enc_state with profile so encoding can start when scan finishes
+    let profile_name = scan_config.profile.clone();
+    let profile = crate::engine::Profile::from_config(profile_name.clone(), &state.config);
+    state.enc_state = Some(crate::engine::EncState::new_with_profile(
+        Vec::new(),
         profile_name,
         directory.clone(),
         Some(profile),
-    );
+    ));
 
-    // Save initial state
-    enc_state
-        .save(&directory)
-        .map_err(|e| format!("Failed to save .enc_state: {}", e))?;
-
-    // Copy jobs to dashboard for display
-    state.dashboard.jobs = enc_state.jobs.clone();
-
-    // Initialize worker pool
-    let max_workers = state.config.max_workers as usize;
-    let pool = Rc::new(WorkerPool::new(max_workers));
-
-    // Store state
-    state.enc_state = Some(enc_state);
-    state.root_path = Some(directory);
-    state.worker_pool = Some(pool.clone());
-
-    // Spawn initial workers (up to max_workers)
-    for _ in 0..max_workers {
-        spawn_next_job(state);
-    }
-
-    Ok(())
+    super::spawn_scan_thread(scan_config, event_tx.clone());
 }
 
 pub(super) fn update_metrics(state: &mut AppState) {
